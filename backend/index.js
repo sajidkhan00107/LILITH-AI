@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import url, { fileURLToPath } from "url";
+import { fileURLToPath } from "url";
 import ImageKit from "imagekit";
 import mongoose from "mongoose";
 import Chat from "./models/chat.js";
@@ -50,7 +50,6 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
   const { text } = req.body;
 
   try {
-    // CREATE A NEW CHAT
     const newChat = new Chat({
       userId: userId,
       history: [{ role: "user", parts: [{ text }] }],
@@ -58,38 +57,30 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
 
     const savedChat = await newChat.save();
 
-    // CHECK IF THE USERCHATS EXISTS
-    const userChats = await UserChats.find({ userId: userId });
+    const userChats = await UserChats.findOne({ userId: userId });
 
-    // IF DOESN'T EXIST CREATE A NEW ONE AND ADD THE CHAT IN THE CHATS ARRAY
-    if (!userChats.length) {
+    if (!userChats) {
       const newUserChats = new UserChats({
         userId: userId,
         chats: [
           {
-            _id: savedChat._id,
+            _id: savedChat._id.toString(),
             title: text.substring(0, 40),
+            createdAt: new Date(),
           },
         ],
       });
-
       await newUserChats.save();
     } else {
-      // IF EXISTS, PUSH THE CHAT TO THE EXISTING ARRAY
-      await UserChats.updateOne(
-        { userId: userId },
-        {
-          $push: {
-            chats: {
-              _id: savedChat._id,
-              title: text.substring(0, 40),
-            },
-          },
-        }
-      );
-
-      res.status(201).send(newChat._id);
+      userChats.chats.push({
+        _id: savedChat._id.toString(),
+        title: text.substring(0, 40),
+        createdAt: new Date(),
+      });
+      await userChats.save();
     }
+
+    res.status(201).send(savedChat._id);
   } catch (err) {
     console.log(err);
     res.status(500).send("Error creating chat!");
@@ -100,9 +91,11 @@ app.get("/api/userchats", ClerkExpressRequireAuth(), async (req, res) => {
   const userId = req.auth.userId;
 
   try {
-    const userChats = await UserChats.find({ userId });
+    const userChats = await UserChats.findOne({ userId });
 
-    res.status(200).send(userChats[0].chats);
+    if (!userChats) return res.status(200).send([]);
+
+    res.status(200).send(userChats.chats);
   } catch (err) {
     console.log(err);
     res.status(500).send("Error fetching userchats!");
@@ -124,26 +117,30 @@ app.get("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
 
 app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
   const userId = req.auth.userId;
-
   const { question, answer, img } = req.body;
 
-  const newItems = [
-    ...(question
-      ? [{ role: "user", parts: [{ text: question }], ...(img && { img }) }]
-      : []),
-    { role: "model", parts: [{ text: answer }] },
-  ];
+  const newItems = [];
+
+  if (question && typeof question === "string" && question.trim() !== "") {
+    const userParts = [{ text: question.trim() }];
+    if (img && typeof img === "string" && img.trim() !== "") {
+      userParts.push({ image: img.trim() });
+    }
+    newItems.push({ role: "user", parts: userParts });
+  }
+
+  if (answer && typeof answer === "string" && answer.trim() !== "") {
+    newItems.push({ role: "model", parts: [{ text: answer.trim() }] });
+  }
+
+  if (newItems.length === 0) {
+    return res.status(400).send("No valid chat data provided");
+  }
 
   try {
     const updatedChat = await Chat.updateOne(
       { _id: req.params.id, userId },
-      {
-        $push: {
-          history: {
-            $each: newItems,
-          },
-        },
-      }
+      { $push: { history: { $each: newItems } } }
     );
     res.status(200).send(updatedChat);
   } catch (err) {
@@ -166,5 +163,5 @@ app.get("*", (req, res) => {
 
 app.listen(port, () => {
   connect();
-  console.log("Server running on 3000");
+  console.log(`Server running on port ${port}`);
 });
